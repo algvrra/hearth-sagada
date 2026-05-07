@@ -2,33 +2,64 @@ from flask import Flask, render_template, request, jsonify, session, send_from_d
 import json, hashlib, uuid, math, os
 from datetime import datetime, timedelta
 
-DATABASE_URL = os.environ.get('DATABASE_URL', '')
-if DATABASE_URL.startswith('postgres'):
-    import psycopg2
-    import psycopg2.extras
-    from psycopg2 import pool as pg_pool
+# Database setup — PostgreSQL on Render, SQLite locally
+_DB_URL = os.environ.get('DATABASE_URL', '')
+if _DB_URL.startswith('postgres'):
+    import psycopg2, psycopg2.extras
+    if _DB_URL.startswith('postgres://'):
+        _DB_URL = _DB_URL.replace('postgres://', 'postgresql://', 1)
     USE_PG = True
-    if DATABASE_URL.startswith('postgres://'):
-        DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
-    # Use a small connection pool — free tier allows max 5 connections
-    _pg_pool = None
-    def get_pg_pool():
-        global _pg_pool
-        if _pg_pool is None:
-            _pg_pool = pg_pool.SimpleConnectionPool(1, 3, DATABASE_URL)
-        return _pg_pool
 else:
     import sqlite3
     USE_PG = False
+
+def get_db():
+    if USE_PG:
+        conn = psycopg2.connect(_DB_URL)
+        conn.autocommit = False
+        return conn
+    conn = sqlite3.connect('hearth_sagada.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def qmark(sql):
+    return sql.replace('?','%s') if USE_PG else sql
+
+def rows(cur):
+    if USE_PG:
+        cols = [d[0] for d in cur.description] if cur.description else []
+        return [dict(zip(cols,r)) for r in (cur.fetchall() or [])]
+    return [dict(r) for r in cur.fetchall()]
+
+def row1(cur):
+    if USE_PG:
+        r = cur.fetchone()
+        if r is None: return None
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols,r))
+    r = cur.fetchone()
+    return dict(r) if r else None
+
+def scalar(cur):
+    r = cur.fetchone()
+    return r[0] if r else 0
+
+def db_exec(conn, sql, params=()):
+    sql = qmark(sql)
+    if USE_PG:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params if params else None)
+        return cur
+    return conn.execute(sql, params)
 
 app = Flask(__name__)
 app.secret_key = 'hearth_sagada_2026_secret'
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SECURE'] = False  # Set True if using HTTPS
+app.config['SESSION_COOKIE_SECURE'] = False
 GOOGLE_CLIENT_ID = "470534247051-vh1aelihkqbfoa1lrn571hfvo2reujfm.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET = "GOCSPX-IWk8KT7gdRw9qh_NR1zMkKtYGex"
-DB = os.environ.get('DB_PATH', 'hearth_sagada.db')
+DB = 'hearth_sagada.db'
 
 SAGADA_LAT, SAGADA_LNG = 17.0867, 120.9028
 TRAVEL_SPEED = {'car': 60, 'bus': 50, 'plane': 700}
@@ -50,50 +81,19 @@ CITIES = {
     "Butuan":(8.9475,125.5406),"Cotabato":(7.2047,124.2310),
 }
 
-def ph():
-    """Return SQL placeholder for current DB type"""
-    return '%s' if USE_PG else '?'
-
-def fix_query(sql):
-    """Convert ? placeholders to %s for PostgreSQL"""
-    if USE_PG:
-        return sql.replace('?', '%s')
-    return sql
-
-def get_db():
-    if USE_PG:
-        pool = get_pg_pool()
-        conn = pool.getconn()
-        conn.cursor_factory = psycopg2.extras.RealDictCursor
-        return conn
-    else:
-        import sqlite3 as _sq
-        conn = _sq.connect(DB); conn.row_factory = _sq.Row; return conn
-
-def put_db(conn):
-    """Return connection to pool (PostgreSQL) or close (SQLite)"""
-    if USE_PG:
-        try:
-            get_pg_pool().putconn(conn)
-        except:
-            try: put_db(conn)
-            except: pass
-    else:
-        try: put_db(conn)
-        except: pass
-
 def haversine(lat1,lon1,lat2,lon2):
     R=6371; p1,p2=math.radians(lat1),math.radians(lat2)
     dp=math.radians(lat2-lat1); dl=math.radians(lon2-lon1)
     a=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2*R*math.asin(math.sqrt(a))
 
+def get_db():
+    conn = sqlite3.connect('hearth_sagada.db'); conn.row_factory = sqlite3.Row; return conn
+
 def init_db():
+    conn=get_db()
+    c=conn.cursor() if USE_PG else conn
     if USE_PG:
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = False
-        c = conn.cursor()
-        # PostgreSQL uses SERIAL instead of AUTOINCREMENT, TEXT instead of INTEGER PRIMARY KEY AUTOINCREMENT
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL DEFAULT '', avatar TEXT DEFAULT '',
@@ -123,9 +123,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
         conn.commit()
     else:
-        import sqlite3 as _sq
-        conn = _sq.connect(DB); c = conn.cursor()
-        c.executescript('''
+        conn.executescript('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
@@ -144,8 +142,7 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 room_id INTEGER, meal_type TEXT,
                 dish_name TEXT, description TEXT,
-                UNIQUE(room_id, meal_type, dish_name),
-                FOREIGN KEY (room_id) REFERENCES rooms(id));
+                UNIQUE(room_id, meal_type, dish_name));
             CREATE TABLE IF NOT EXISTS bookings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 booking_ref TEXT UNIQUE NOT NULL, user_id INTEGER, room_id INTEGER,
@@ -157,20 +154,18 @@ def init_db():
                 travel_hours REAL DEFAULT 0, origin_city TEXT DEFAULT '',
                 transport TEXT DEFAULT 'car', split_guests TEXT DEFAULT '[]',
                 meal_plan TEXT DEFAULT 'with',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (room_id) REFERENCES rooms(id));
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
         ''')
-    ph = '%s' if USE_PG else '?'
     ap=hashlib.sha256('admin123'.encode()).hexdigest()
     if USE_PG:
         c.execute("INSERT INTO users (name,email,password,role) VALUES (%s,%s,%s,%s) ON CONFLICT (email) DO NOTHING",('Admin','admin@hearth.com',ap,'admin'))
-        up=hashlib.sha256('user123'.encode()).hexdigest()
+    else:
+        c.execute("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)",('Admin','admin@hearth.com',ap,'admin'))
+    up=hashlib.sha256('user123'.encode()).hexdigest()
+    if USE_PG:
         c.execute("INSERT INTO users (name,email,password,role) VALUES (%s,%s,%s,%s) ON CONFLICT (email) DO NOTHING",('Juan dela Cruz','juan@email.com',up,'user'))
     else:
-        c.execute(fix_query("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)"),('Admin','admin@hearth.com',ap,'admin'))
-        up=hashlib.sha256('user123'.encode()).hexdigest()
-        c.execute(fix_query("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)"),('Juan dela Cruz','juan@email.com',up,'user'))
+        c.execute("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)",('Juan dela Cruz','juan@email.com',up,'user'))
     rooms=[
         ('Sumaguing Cave Room',
          'A uniquely designed room featuring stone-textured walls and earthy tones to mimic the natural beauty of Sagada\'s famous caves. This ground-floor unit offers a cool, quiet atmosphere and is the perfect "base camp" for adventurers planning an early morning spelunking trip.',
@@ -251,48 +246,35 @@ def init_db():
          '["/static/mapiyaaw1.png","/static/mapiyaaw2.png","/static/mapiyaaw3.png","/static/mapiyaaw4.png"]',
          'South Road, near the border of Poblacion and Dagdag'),
     ]
-    # Re-seed rooms only if table is empty (first run), else just update existing rooms
-    existing = c.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]
-    if existing == 0:
-        # First run — insert all rooms
-        conn.commit()
-    else:
-        # Update room data without deleting bookings
-        conn.commit()
-        for r in rooms:
-            name,description,price,rating,reviews,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos,location = r
-            if USE_PG:
-                c.execute('''UPDATE rooms SET description=%s,price=%s,rating=%s,reviews=%s,location=%s,
-                    max_guests=%s,pet_friendly=%s,pet_policy=%s,meal_included=%s,amenities=%s,photos=%s
-                    WHERE name=%s''',(description,price,rating,reviews,location,max_guests,pet_friendly,
-                pet_policy,meal_included,amenities,photos,name))
-            else:
-                c.execute('''UPDATE rooms SET description=?,price=?,rating=?,reviews=?,location=?,
-                    max_guests=?,pet_friendly=?,pet_policy=?,meal_included=?,amenities=?,photos=?
-                    WHERE name=?''',(description,price,rating,reviews,location,max_guests,pet_friendly,
-                    pet_policy,meal_included,amenities,photos,name))
-        conn.commit()
-        return  # Skip re-inserting rooms, bookings are safe
-    # Insert rooms on first run
+    # Re-seed rooms every startup
+    c.execute("DELETE FROM rooms")
+    conn.commit()
     for r in rooms:
         name,description,price,rating,reviews,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos,location = r
         if USE_PG:
             c.execute("INSERT INTO rooms (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                       (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos))
         else:
-            c.execute(fix_query("INSERT INTO rooms (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"),
+            c.execute("INSERT INTO rooms (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                       (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos))
     # Meals start empty — admin inputs dishes per room per day via the Admin Panel
     # Do NOT wipe existing meals on restart so admin entries are preserved
     # Migrate existing DBs: add meal_plan column if missing
     try:
-        c.execute("ALTER TABLE bookings ADD COLUMN meal_plan TEXT DEFAULT 'with'")
+        if USE_PG:
+            c.execute("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS meal_plan TEXT DEFAULT 'with'")
+        else:
+            c.execute("ALTER TABLE bookings ADD COLUMN meal_plan TEXT DEFAULT 'with'")
         conn.commit()
     except:
-        pass  # Column already exists
+        pass
     # Migrate meals table: remove date column and duplicates if old schema exists
     try:
-        cols = [row[1] for row in c.execute("PRAGMA table_info(meals)").fetchall()]
+        if USE_PG:
+            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='meals'")
+            cols = [r[0] for r in c.fetchall()]
+        else:
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(meals)").fetchall()]
         if 'date' in cols:
             # Recreate meals table without date, keeping only unique rows
             c.executescript('''
@@ -301,7 +283,7 @@ def init_db():
                     room_id INTEGER, meal_type TEXT,
                     dish_name TEXT, description TEXT,
                     UNIQUE(room_id, meal_type, dish_name));
-                INSERT OR IGNORE INTO meals_new (room_id, meal_type, dish_name, description)
+                INSERT INTO meals_new (room_id, meal_type, dish_name, description)
                     SELECT room_id, meal_type, dish_name, description FROM meals;
                 DROP TABLE meals;
                 ALTER TABLE meals_new RENAME TO meals;
@@ -311,16 +293,19 @@ def init_db():
         pass
     # Migrate old DBs: ensure available column exists on rooms
     try:
-        c.execute("ALTER TABLE rooms ADD COLUMN available INTEGER DEFAULT 1")
+        if USE_PG:
+            c.execute("ALTER TABLE rooms ADD COLUMN IF NOT EXISTS available INTEGER DEFAULT 1")
+        else:
+            c.execute("ALTER TABLE rooms ADD COLUMN available INTEGER DEFAULT 1")
         conn.commit()
     except:
-        pass  # Column already exists
+        pass
     # Fix any rooms where available is NULL
     c.execute("UPDATE rooms SET available=1 WHERE available IS NULL")
     conn.commit()
     # Ensure all seeded rooms are visible (available=1)
     c.execute("UPDATE rooms SET available=1 WHERE available IS NULL OR available=0")
-    conn.commit(); put_db(conn)
+    conn.commit(); conn.close()
 
 @app.route('/api/register',methods=['POST'])
 def register():
@@ -330,8 +315,8 @@ def register():
     pw=hashlib.sha256(d['password'].encode()).hexdigest()
     try:
         conn=get_db()
-        conn.execute(fix_query("INSERT INTO users (name,email,password) VALUES (?,?,?)"),(d['name'].strip(),d['email'].strip().lower(),pw))
-        conn.commit(); put_db(conn); return jsonify({'success':True})
+        db_exec(conn, "INSERT INTO users (name,email,password) VALUES (?,?,?)",(d['name'].strip(),d['email'].strip().lower(),pw))
+        conn.commit(); conn.close(); return jsonify({'success':True})
     except: return jsonify({'success':False,'error':'Email already registered'}),400
 
 @app.route('/api/login',methods=['POST'])
@@ -341,8 +326,8 @@ def login():
         return jsonify({'success':False,'error':'Email and password required'}),400
     pw=hashlib.sha256(d['password'].encode()).hexdigest()
     conn=get_db()
-    user=conn.execute(fix_query("SELECT * FROM users WHERE email=? AND password=?"),(d['email'].strip().lower(),pw)).fetchone()
-    put_db(conn)
+    user=db_exec(conn, "SELECT * FROM users WHERE email=? AND password=?",(d['email'].strip().lower(),pw)).fetchone()
+    conn.close()
     if user:
         session['user_id']=user['id']; session['role']=user['role']
         session['name']=user['name']; session['avatar']=user['avatar'] or ''
@@ -354,11 +339,11 @@ def google_login():
     d=request.json or {}
     if not d.get('email'): return jsonify({'success':False,'error':'Invalid Google data'}),400
     conn=get_db()
-    user=conn.execute(fix_query("SELECT * FROM users WHERE email=?"),(d['email'],)).fetchone()
+    user=db_exec(conn, "SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
     if not user:
-        conn.execute(fix_query("INSERT INTO users (name,email,password,avatar,google_id) VALUES (?,?,?,?,?)"),(d.get('name','Google User'),d['email'],'',d.get('avatar',''),d.get('google_id','')))
-        conn.commit(); user=conn.execute(fix_query("SELECT * FROM users WHERE email=?"),(d['email'],)).fetchone()
-    put_db(conn)
+        db_exec(conn, "INSERT INTO users (name,email,password,avatar,google_id) VALUES (?,?,?,?,?)",(d.get('name','Google User'),d['email'],'',d.get('avatar',''),d.get('google_id','')))
+        conn.commit(); user=db_exec(conn, "SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
+    conn.close()
     session['user_id']=user['id']; session['role']=user['role']
     session['name']=user['name']; session['avatar']=user['avatar'] or d.get('avatar','')
     return jsonify({'success':True,'role':user['role'],'name':user['name'],'avatar':user['avatar'] or ''})
@@ -379,22 +364,22 @@ def get_rooms():
     if request.args.get('pet_friendly')=='1': filters.append("pet_friendly=1")
     filters.append("(available=1 OR available IS NULL)")
     if filters: q+=" WHERE "+" AND ".join(filters)
-    rows=conn.execute(q,params).fetchall(); put_db(conn)
-    return jsonify([dict(r) for r in rows])
+    cur=db_exec(conn,q,params); result=cur.fetchall(); conn.close()
+    return jsonify([dict(r) for r in result])
 
 @app.route('/api/rooms/<int:rid>')
 def get_room(rid):
     conn=get_db()
-    room=conn.execute(fix_query("SELECT * FROM rooms WHERE id=?"),(rid,)).fetchone()
-    if not room: put_db(conn); return jsonify({'error':'Not found'}),404
-    meals=conn.execute(fix_query("SELECT * FROM meals WHERE room_id=? ORDER BY meal_type"),(rid,)).fetchall()
-    put_db(conn); r=dict(room); r['meals']=[dict(m) for m in meals]; return jsonify(r)
+    room=db_exec(conn, "SELECT * FROM rooms WHERE id=?",(rid,)).fetchone()
+    if not room: conn.close(); return jsonify({'error':'Not found'}),404
+    meals=db_exec(conn, "SELECT * FROM meals WHERE room_id=? ORDER BY meal_type",(rid,)).fetchall()
+    conn.close(); r=dict(room); r['meals']=[dict(m) for m in meals]; return jsonify(r)
 
 @app.route('/api/rooms/<int:rid>/booked-dates')
 def booked_dates(rid):
     conn=get_db()
-    bks=conn.execute(fix_query("SELECT checkin,checkout FROM bookings WHERE room_id=? AND status='confirmed'"),(rid,)).fetchall()
-    put_db(conn); dates=[]
+    bks=db_exec(conn, "SELECT checkin,checkout FROM bookings WHERE room_id=? AND status='confirmed'",(rid,)).fetchall()
+    conn.close(); dates=[]
     for b in bks:
         cur=datetime.strptime(b['checkin'],'%Y-%m-%d'); end=datetime.strptime(b['checkout'],'%Y-%m-%d')
         while cur<=end: dates.append(cur.strftime('%Y-%m-%d')); cur+=timedelta(days=1)
@@ -403,8 +388,8 @@ def booked_dates(rid):
 @app.route('/api/rooms/<int:rid>/meals')
 def room_meals(rid):
     conn=get_db()
-    meals=conn.execute(fix_query("SELECT * FROM meals WHERE room_id=? ORDER BY meal_type"),(rid,)).fetchall()
-    put_db(conn); return jsonify([dict(m) for m in meals])
+    meals=db_exec(conn, "SELECT * FROM meals WHERE room_id=? ORDER BY meal_type",(rid,)).fetchall()
+    conn.close(); return jsonify([dict(m) for m in meals])
 
 @app.route('/api/bookings',methods=['POST'])
 def create_booking():
@@ -413,8 +398,8 @@ def create_booking():
     if not d.get('room_id') or not d.get('checkin') or not d.get('checkout'):
         return jsonify({'error':'Missing required fields'}),400
     conn=get_db()
-    room=conn.execute(fix_query("SELECT * FROM rooms WHERE id=?"),(d['room_id'],)).fetchone()
-    if not room: put_db(conn); return jsonify({'error':'Room not found'}),404
+    room=db_exec(conn, "SELECT * FROM rooms WHERE id=?",(d['room_id'],)).fetchone()
+    if not room: conn.close(); return jsonify({'error':'Room not found'}),404
     checkin=datetime.strptime(d['checkin'],'%Y-%m-%d'); checkout=datetime.strptime(d['checkout'],'%Y-%m-%d')
     nights=max(1,(checkout-checkin).days); adults=max(1,int(d.get('adults',1)))
     base_total=room['price']*nights
@@ -437,35 +422,35 @@ def create_booking():
     # Pay in Person → pending_deposit until ₱500 deposit is uploaded
     # GCash → confirmed immediately (full payment sent)
     initial_status = 'pending_deposit' if payment_method == 'person' else 'confirmed'
-    conn.execute('''INSERT INTO bookings
+    db_exec(conn, '''INSERT INTO bookings
         (booking_ref,user_id,room_id,checkin,checkout,adults,children,
          total_price,payment_method,status,travel_hours,origin_city,transport,split_guests,meal_plan)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (ref,session['user_id'],d['room_id'],d['checkin'],d['checkout'],
          adults,int(d.get('children',0)),total,payment_method,initial_status,
          travel_hours,origin,transport,json.dumps(d.get('split_guests',[])),meal_plan))
-    conn.commit(); put_db(conn)
+    conn.commit(); conn.close()
     return jsonify({'success':True,'booking_ref':ref,'total':total,'travel_hours':travel_hours,'dist_km':dist_km,'nights':nights})
 
 @app.route('/api/bookings/my')
 def my_bookings():
     if 'user_id' not in session: return jsonify([])
     conn=get_db()
-    rows=conn.execute('''SELECT b.*,r.name as room_name FROM bookings b
+    rows=db_exec(conn, '''SELECT b.*,r.name as room_name FROM bookings b
         JOIN rooms r ON b.room_id=r.id WHERE b.user_id=? ORDER BY b.created_at DESC''',(session['user_id'],)).fetchall()
-    put_db(conn); return jsonify([dict(r) for r in rows])
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/bookings/<ref>/cancel',methods=['POST'])
 def cancel_booking(ref):
     if 'user_id' not in session: return jsonify({'error':'Not authenticated'}),401
-    conn=get_db(); bk=conn.execute(fix_query("SELECT * FROM bookings WHERE booking_ref=?"),(ref,)).fetchone()
-    if not bk: put_db(conn); return jsonify({'error':'Not found'}),404
+    conn=get_db(); bk=db_exec(conn, "SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
+    if not bk: conn.close(); return jsonify({'error':'Not found'}),404
     if bk['user_id']!=session['user_id'] and session.get('role')!='admin':
-        put_db(conn); return jsonify({'error':'Unauthorized'}),403
+        conn.close(); return jsonify({'error':'Unauthorized'}),403
     # 48-hour free cancellation window
     checkin=datetime.strptime(bk['checkin'],'%Y-%m-%d')
     hours_until = (checkin - datetime.now()).total_seconds() / 3600
-    room=conn.execute(fix_query("SELECT price FROM rooms WHERE id=?"),(bk['room_id'],)).fetchone()
+    room=db_exec(conn, "SELECT price FROM rooms WHERE id=?",(bk['room_id'],)).fetchone()
     one_night=float(room['price']) if room else 0
     deposit=500.0
     deposit_was_paid = bool(bk['deposit_paid'])
@@ -478,28 +463,28 @@ def cancel_booking(ref):
         cancellation_fee=deposit
         late=True
     refund=float(bk['total_price'])
-    conn.execute(fix_query("UPDATE bookings SET status='cancelled',cancellation_fee=? WHERE booking_ref=?"),(cancellation_fee,ref))
-    conn.commit(); put_db(conn)
+    db_exec(conn, "UPDATE bookings SET status='cancelled',cancellation_fee=? WHERE booking_ref=?",(cancellation_fee,ref))
+    conn.commit(); conn.close()
     return jsonify({'success':True,'cancellation_fee':cancellation_fee,'refund':refund,'late_cancel':late,'one_night_rate':one_night})
 
 @app.route('/api/bookings/<ref>/upload-receipt',methods=['POST'])
 def upload_receipt(ref):
     if 'user_id' not in session: return jsonify({'error':'Not authenticated'}),401
-    conn=get_db(); bk=conn.execute(fix_query("SELECT * FROM bookings WHERE booking_ref=?"),(ref,)).fetchone()
-    if not bk: put_db(conn); return jsonify({'error':'Not found'}),404
-    if bk['user_id']!=session['user_id']: put_db(conn); return jsonify({'error':'Unauthorized'}),403
+    conn=get_db(); bk=db_exec(conn, "SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
+    if not bk: conn.close(); return jsonify({'error':'Not found'}),404
+    if bk['user_id']!=session['user_id']: conn.close(); return jsonify({'error':'Unauthorized'}),403
     d=request.json or {}
     receipt_note=d.get('receipt_note','Receipt submitted').strip()
-    conn.execute(fix_query("UPDATE bookings SET deposit_receipt=? WHERE booking_ref=?"),(receipt_note,ref))
-    conn.commit(); put_db(conn)
+    db_exec(conn, "UPDATE bookings SET deposit_receipt=? WHERE booking_ref=?",(receipt_note,ref))
+    conn.commit(); conn.close()
     return jsonify({'success':True,'message':'Receipt submitted! Admin will confirm your booking shortly.'})
 
 @app.route('/api/admin/bookings/<ref>/confirm-deposit',methods=['POST'])
 def confirm_deposit(ref):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    conn.execute(fix_query("UPDATE bookings SET status='confirmed',deposit_paid=1 WHERE booking_ref=?"),(ref,))
-    conn.commit(); put_db(conn)
+    db_exec(conn, "UPDATE bookings SET status='confirmed',deposit_paid=1 WHERE booking_ref=?",(ref,))
+    conn.commit(); conn.close()
     return jsonify({'success':True})
 
 def require_admin(): return session.get('role')=='admin'
@@ -517,16 +502,16 @@ def admin_stats():
     revenue=q("SELECT COALESCE(SUM(total_price),0) FROM bookings WHERE status IN ('confirmed','completed')")
     cancel_fees=q("SELECT COALESCE(SUM(cancellation_fee),0) FROM bookings WHERE status='cancelled'")
     users=q("SELECT COUNT(*) FROM users WHERE role='user'")
-    popular=conn.execute('''SELECT r.name,COUNT(*) as c FROM bookings b
+    popular=db_exec(conn, '''SELECT r.name,COUNT(*) as c FROM bookings b
         JOIN rooms r ON b.room_id=r.id GROUP BY r.id ORDER BY c DESC LIMIT 1''').fetchone()
-    monthly=conn.execute('''SELECT strftime('%m',created_at) as mo,COUNT(*) as c,
+    monthly=db_exec(conn, '''SELECT strftime('%m',created_at) as mo,COUNT(*) as c,
         COALESCE(SUM(total_price),0) as rev FROM bookings
         WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo''').fetchall()
-    recent=conn.execute('''SELECT b.booking_ref,u.name as guest,r.name as room,
+    recent=db_exec(conn, '''SELECT b.booking_ref,u.name as guest,r.name as room,
         b.checkin,b.checkout,b.total_price,b.status FROM bookings b
         JOIN users u ON b.user_id=u.id JOIN rooms r ON b.room_id=r.id
         ORDER BY b.created_at DESC LIMIT 5''').fetchall()
-    put_db(conn)
+    conn.close()
     return jsonify({'total':total,'confirmed':confirmed,'pending':pending,'cancelled':cancelled,'completed':completed,
         'revenue':float(revenue),'cancel_fees':float(cancel_fees),'users':users,
         'popular':dict(popular) if popular else {},'monthly':[dict(m) for m in monthly],
@@ -536,37 +521,37 @@ def admin_stats():
 def admin_bookings():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    rows=conn.execute('''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
+    rows=db_exec(conn, '''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
         FROM bookings b JOIN rooms r ON b.room_id=r.id JOIN users u ON b.user_id=u.id
         ORDER BY b.created_at DESC''').fetchall()
-    put_db(conn); return jsonify([dict(r) for r in rows])
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/admin/bookings/<ref>/complete',methods=['POST'])
 def complete_booking(ref):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    conn.execute(fix_query("UPDATE bookings SET status='completed' WHERE booking_ref=?"),(ref,))
-    conn.commit(); put_db(conn); return jsonify({'success':True})
+    db_exec(conn, "UPDATE bookings SET status='completed' WHERE booking_ref=?",(ref,))
+    conn.commit(); conn.close(); return jsonify({'success':True})
 
 @app.route('/api/admin/users')
 def admin_users():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    rows=conn.execute("SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC").fetchall()
-    put_db(conn); return jsonify([dict(r) for r in rows])
+    rows=db_exec(conn, "SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC").fetchall()
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/admin/rooms',methods=['GET'])
 def admin_rooms():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
-    conn=get_db(); rows=conn.execute("SELECT * FROM rooms").fetchall()
-    put_db(conn); return jsonify([dict(r) for r in rows])
+    conn=get_db(); rows=db_exec(conn, "SELECT * FROM rooms").fetchall()
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/admin/rooms/<int:rid>/toggle',methods=['POST'])
 def toggle_room(rid):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    conn.execute(fix_query("UPDATE rooms SET available=CASE WHEN available=1 THEN 0 ELSE 1 END WHERE id=?"),(rid,))
-    conn.commit(); put_db(conn); return jsonify({'success':True})
+    db_exec(conn, "UPDATE rooms SET available=CASE WHEN available=1 THEN 0 ELSE 1 END WHERE id=?",(rid,))
+    conn.commit(); conn.close(); return jsonify({'success':True})
 
 
 @app.route('/api/travel-time',methods=['POST'])
