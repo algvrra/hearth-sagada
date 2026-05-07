@@ -3,9 +3,9 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>The Hearth of Sagada</title>
+<title>Casa Sagada</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <!-- Google Identity Services (real Google sign-in) -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
@@ -73,7 +73,7 @@ img{max-width:100%;display:block}
   box-shadow:0 2px 8px rgba(240,160,0,.35);flex-shrink:0;
 }
 .logo-text{line-height:1.1}
-.logo-title{font-family:var(--serif);font-size:15.5px;font-weight:700;color:var(--y5);letter-spacing:.2px}
+.logo-title{font-family:"Cormorant Garamond",var(--serif);font-size:19px;font-weight:400;color:var(--y5);letter-spacing:1.5px;font-style:italic}
 .logo-sub{font-size:10px;color:var(--muted);font-style:italic}
 
 /* Top nav links */
@@ -706,9 +706,9 @@ tr:hover td{background:var(--y0)}
 <!-- ═══════════════ TOP BAR ═══════════════ -->
 <header id="topbar">
   <div class="logo" onclick="goPage('home')">
-    <div class="logo-flame">🔥</div>
+    <div class="logo-flame" style="background:linear-gradient(135deg,#c9a96e,#8b6914);font-size:16px;letter-spacing:-1px;font-family:'Cormorant Garamond',serif;font-weight:300;color:#fff;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:10px;box-shadow:0 2px 8px rgba(139,105,20,.35)">CS</div>
     <div class="logo-text">
-      <div class="logo-title">THE HEARTH OF SAGADA</div>
+      <div class="logo-title" style="font-family:'Cormorant Garamond',serif;font-size:19px;font-weight:400;letter-spacing:1.5px;color:var(--y5);text-transform:none;font-style:italic">Casa Sagada</div>
       <div class="logo-sub">Rustic Comfort in the Heart of the Pines</div>
     </div>
   </div>
@@ -805,7 +805,7 @@ tr:hover td{background:var(--y0)}
   <div class="section">
     <div class="sec-hd">
       <h2>My Bookings</h2>
-      <p>Your reservations at The Hearth of Sagada</p>
+      <p>Your reservations at Casa Sagada</p>
     </div>
     <div id="bkList"></div>
   </div>
@@ -932,7 +932,7 @@ tr:hover td{background:var(--y0)}
   <div class="modal" style="max-width:510px">
     <div class="modal-hd">
       <div>
-        <h2>Booking</h2>
+        <h2>Casa Sagada</h2>
         <div id="bkSubtitle" style="font-size:12px;color:var(--muted);margin-top:1px"></div>
       </div>
       <button class="mclose" onclick="closeOv('bkOv')">✕</button>
@@ -1026,7 +1026,7 @@ tr:hover td{background:var(--y0)}
             <div style="background:var(--card);border:2px dashed var(--y4);border-radius:10px;padding:14px 18px;margin-bottom:10px">
               <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:4px">GCash Number</div>
               <div style="font-size:26px;font-weight:800;letter-spacing:3px;color:var(--d0);font-family:monospace">0917-123-4567</div>
-              <div style="font-size:12px;color:var(--stone);margin-top:4px">Account Name: <b>The Hearth of Sagada</b></div>
+              <div style="font-size:12px;color:var(--stone);margin-top:4px">Account Name: <b>Casa Sagada</b></div>
             </div>
             <div style="font-size:11px;color:var(--muted);background:var(--y1);border-radius:8px;padding:8px 12px;text-align:left;line-height:1.7">
               1. Open GCash app → Send Money<br/>
@@ -1049,7 +1049,7 @@ tr:hover td{background:var(--y0)}
             <div style="margin-top:12px;background:var(--card);border:1.5px dashed var(--y4);border-radius:9px;padding:13px 15px">
               <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:4px">Send ₱500 Deposit to GCash</div>
               <div style="font-size:22px;font-weight:800;letter-spacing:3px;color:var(--d0);font-family:monospace">0917-123-4567</div>
-              <div style="font-size:12px;color:var(--stone);margin-top:4px">Account Name: <b>The Hearth of Sagada</b></div>
+              <div style="font-size:12px;color:var(--stone);margin-top:4px">Account Name: <b>Casa Sagada</b></div>
             </div>
           </div>
           <div style="background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.2);border-radius:10px;padding:14px 16px;margin-top:10px">
@@ -1153,11 +1153,12 @@ let mealSelections = {};  // meal choices per day/type
 let FAVS = new Set(JSON.parse(localStorage.getItem('hearth_favs')||'[]')); // favorited room ids
 
 /* ══ HELPERS ══ */
-const API_BASE = (location.port === '5000' || location.port === '') ? '' : 'http://localhost:5000';
+const API_BASE = '';
 async function req(url, opts={}){
-  const r = await fetch(API_BASE + url, { headers:{'Content-Type':'application/json'}, ...opts });
-  if(!r.ok && r.status !== 401 && r.status !== 403) throw new Error('HTTP '+r.status);
-  return r.json();
+  const r = await fetch(API_BASE + url, { credentials:'include', headers:{'Content-Type':'application/json'}, ...opts });
+  const json = await r.json().catch(()=>({}));
+  if(!r.ok && r.status !== 401 && r.status !== 403 && !json.success && !json.error) throw new Error('HTTP '+r.status);
+  return json;
 }
 function iso(d){ return d.toISOString().split('T')[0]; }
 function fmtDate(s){ return s ? new Date(s+'T00:00:00').toLocaleDateString('en-PH',{month:'short',day:'numeric',year:'numeric'}) : '—'; }
@@ -1289,8 +1290,12 @@ function renderRooms(){
   // Load rooms immediately without waiting — runs in parallel
   loadRooms();
 
-  // Session restore and cities in background
-  try { const r = await req('/api/me'); if(r.logged_in){ ME = r; refreshNav(); } } catch(e){}
+  // Session restore — try sessionStorage first for instant UI, then verify with server
+  try {
+    const cached = sessionStorage.getItem('hearth_me');
+    if(cached){ ME = JSON.parse(cached); refreshNav(); }
+  } catch(e){}
+  try { const r = await req('/api/me'); if(r.logged_in){ ME = r; sessionStorage.setItem('hearth_me', JSON.stringify(r)); refreshNav(); } else { ME = null; sessionStorage.removeItem('hearth_me'); refreshNav(); } } catch(e){}
   try { CITIES = await req('/api/cities'); fillCities(); } catch(e){}
 })();
 
@@ -1514,7 +1519,7 @@ function simulatedGoogleSignIn(){
         <button onclick="document.getElementById('googlePopup').remove()" style="font-size:20px;color:#5f6368;cursor:pointer;border:none;background:none;padding:4px">✕</button>
       </div>
       <h2 style="font-size:22px;font-weight:500;color:#202124;margin-bottom:8px;font-family:Google Sans,sans-serif">Sign in with Google</h2>
-      <p style="font-size:14px;color:#5f6368;margin-bottom:20px">to continue to The Hearth of Sagada</p>
+      <p style="font-size:14px;color:#5f6368;margin-bottom:20px">to continue to Casa Sagada</p>
       <input id="gpEmail" type="email" placeholder="Email or phone" style="width:100%;padding:12px 14px;border:1.5px solid #dadce0;border-radius:6px;font-size:14px;color:#202124;outline:none;font-family:inherit;margin-bottom:8px" onfocus="this.style.borderColor='#1a73e8'" onblur="this.style.borderColor='#dadce0'"/>
       <div id="gpPwSection" style="display:none;margin-bottom:8px">
         <input id="gpPw" type="password" placeholder="Enter your password" style="width:100%;padding:12px 14px;border:1.5px solid #dadce0;border-radius:6px;font-size:14px;color:#202124;outline:none;font-family:inherit" onfocus="this.style.borderColor='#1a73e8'" onblur="this.style.borderColor='#dadce0'"/>
@@ -1526,7 +1531,7 @@ function simulatedGoogleSignIn(){
       </div>
     </div>
     <div style="background:#f8f9fa;padding:12px 32px;border-top:1px solid #e8eaed;font-size:11px;color:#5f6368;text-align:center">
-      Before using this app, you can review The Hearth of Sagada's
+      Before using this app, you can review Casa Sagada's
       <a href="#" style="color:#1a73e8">Privacy Policy</a> and
       <a href="#" style="color:#1a73e8">Terms of Service</a>
     </div>`;
@@ -1571,6 +1576,7 @@ async function signInWithGoogle(googleUser){
     });
     if(d.success){
       ME = { logged_in:true, name:d.name, role:d.role, avatar:googleUser.avatar||'', email:googleUser.email };
+      sessionStorage.setItem('hearth_me', JSON.stringify(ME));
       refreshNav();
       closeOv('authOv');
       toast(`Welcome, ${d.name}! 👋`, 'ok');
@@ -1609,6 +1615,7 @@ async function doLogin(){
     const d = await req('/api/login', { method:'POST', body: JSON.stringify({email, password:pw}) });
     if(d.success){
       ME = { logged_in:true, name:d.name, role:d.role, avatar:d.avatar||'', email };
+      sessionStorage.setItem('hearth_me', JSON.stringify(ME));
       refreshNav(); closeOv('authOv');
       toast(`Welcome back, ${d.name}! 👋`, 'ok');
     } else setErr('liErr', d.error || 'Login failed.');
@@ -1631,7 +1638,7 @@ async function doRegister(){
 async function doLogout(){
   closeDD();
   await fetch('/api/logout', { method:'POST' });
-  ME = null; refreshNav(); goPage('home');
+  ME = null; sessionStorage.removeItem('hearth_me'); refreshNav(); goPage('home');
   toast('Signed out successfully.');
   // Cancel Google session
   if(window.google?.accounts?.id) google.accounts.id.disableAutoSelect();
@@ -1988,13 +1995,13 @@ async function submitBooking(){
           <div class="conf-title">${isPending ? 'ALMOST THERE!' : 'SEE YOU!'}</div>
           <div class="conf-sub">${isPending
             ? 'Your booking is <b>Pending Deposit</b> — send ₱500 via GCash within 24 hours to confirm your slot.'
-            : 'Thank you for booking at The Hearth of Sagada'}</div>
+            : 'Thank you for booking at Casa Sagada'}</div>
           <div class="conf-ref">${d.booking_ref}</div>
           ${isPending ? `
           <div style="background:linear-gradient(135deg,#fffbe6,#fff3cc);border:2px solid var(--y4);border-radius:12px;padding:16px;margin:14px 0;text-align:left">
             <div style="font-weight:700;font-size:14px;margin-bottom:10px;color:var(--d0)">📱 Step 2: Send ₱500 Security Deposit</div>
             <div style="font-size:22px;font-weight:800;letter-spacing:3px;font-family:monospace;margin-bottom:4px">0917-123-4567</div>
-            <div style="font-size:12px;color:var(--stone);margin-bottom:12px">Account Name: <b>The Hearth of Sagada</b></div>
+            <div style="font-size:12px;color:var(--stone);margin-bottom:12px">Account Name: <b>Casa Sagada</b></div>
             <div style="font-size:12px;color:var(--muted);margin-bottom:10px">After sending, enter your GCash reference number or name below so the admin can verify:</div>
             <input class="fi" id="receiptNote" placeholder="e.g. Ref# 1234567890 / Juan dela Cruz" style="margin-bottom:8px"/>
             <button class="btn btn-y" onclick="submitDepositReceipt('${d.booking_ref}')" style="font-size:13px;padding:9px">📤 Submit Receipt Info</button>
