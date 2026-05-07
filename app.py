@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 
 app = Flask(__name__)
 app.secret_key = 'hearth_sagada_2026_secret'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SECURE'] = False  # Set True if using HTTPS
 GOOGLE_CLIENT_ID = "470534247051-vh1aelihkqbfoa1lrn571hfvo2reujfm.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET = "GOCSPX-IWk8KT7gdRw9qh_NR1zMkKtYGex"
 DB = 'hearth_sagada.db'
