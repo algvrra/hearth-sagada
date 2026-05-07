@@ -87,9 +87,6 @@ def haversine(lat1,lon1,lat2,lon2):
     a=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2*R*math.asin(math.sqrt(a))
 
-def get_db():
-    conn = sqlite3.connect('hearth_sagada.db'); conn.row_factory = sqlite3.Row; return conn
-
 def init_db():
     conn=get_db()
     c=conn.cursor() if USE_PG else conn
@@ -436,9 +433,9 @@ def create_booking():
 def my_bookings():
     if 'user_id' not in session: return jsonify([])
     conn=get_db()
-    rows=db_exec(conn, '''SELECT b.*,r.name as room_name FROM bookings b
-        JOIN rooms r ON b.room_id=r.id WHERE b.user_id=? ORDER BY b.created_at DESC''',(session['user_id'],)).fetchall()
-    conn.close(); return jsonify([dict(r) for r in rows])
+    result=rows(db_exec(conn, '''SELECT b.*,r.name as room_name FROM bookings b
+        JOIN rooms r ON b.room_id=r.id WHERE b.user_id=? ORDER BY b.created_at DESC''',(session['user_id'],)))
+    conn.close(); return jsonify(result)
 
 @app.route('/api/bookings/<ref>/cancel',methods=['POST'])
 def cancel_booking(ref):
@@ -493,7 +490,7 @@ def require_admin(): return session.get('role')=='admin'
 def admin_stats():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    def q(sql,*args): return conn.execute(sql,args).fetchone()[0]
+    def q(sql,*args): return scalar(db_exec(conn, sql, args))
     total=q("SELECT COUNT(*) FROM bookings")
     confirmed=q("SELECT COUNT(*) FROM bookings WHERE status='confirmed'")
     pending=q("SELECT COUNT(*) FROM bookings WHERE status='pending_deposit'")
@@ -502,29 +499,29 @@ def admin_stats():
     revenue=q("SELECT COALESCE(SUM(total_price),0) FROM bookings WHERE status IN ('confirmed','completed')")
     cancel_fees=q("SELECT COALESCE(SUM(cancellation_fee),0) FROM bookings WHERE status='cancelled'")
     users=q("SELECT COUNT(*) FROM users WHERE role='user'")
-    popular=db_exec(conn, '''SELECT r.name,COUNT(*) as c FROM bookings b
-        JOIN rooms r ON b.room_id=r.id GROUP BY r.id ORDER BY c DESC LIMIT 1''').fetchone()
-    monthly=db_exec(conn, '''SELECT strftime('%m',created_at) as mo,COUNT(*) as c,
-        COALESCE(SUM(total_price),0) as rev FROM bookings
-        WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo''').fetchall()
-    recent=db_exec(conn, '''SELECT b.booking_ref,u.name as guest,r.name as room,
+    popular=row1(db_exec(conn, '''SELECT r.name,COUNT(*) as c FROM bookings b
+        JOIN rooms r ON b.room_id=r.id GROUP BY r.id ORDER BY c DESC LIMIT 1'''))
+    month_sql = ("SELECT to_char(created_at,'MM') as mo,COUNT(*) as c,COALESCE(SUM(total_price),0) as rev FROM bookings WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo" if USE_PG
+        else "SELECT strftime('%m',created_at) as mo,COUNT(*) as c,COALESCE(SUM(total_price),0) as rev FROM bookings WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo")
+    monthly=rows(db_exec(conn, month_sql))
+    recent=rows(db_exec(conn, '''SELECT b.booking_ref,u.name as guest,r.name as room,
         b.checkin,b.checkout,b.total_price,b.status FROM bookings b
         JOIN users u ON b.user_id=u.id JOIN rooms r ON b.room_id=r.id
-        ORDER BY b.created_at DESC LIMIT 5''').fetchall()
+        ORDER BY b.created_at DESC LIMIT 5'''))
     conn.close()
     return jsonify({'total':total,'confirmed':confirmed,'pending':pending,'cancelled':cancelled,'completed':completed,
         'revenue':float(revenue),'cancel_fees':float(cancel_fees),'users':users,
-        'popular':dict(popular) if popular else {},'monthly':[dict(m) for m in monthly],
-        'recent':[dict(r) for r in recent]})
+        'popular':popular if popular else {},'monthly':monthly,
+        'recent':recent})
 
 @app.route('/api/admin/bookings')
 def admin_bookings():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    rows=db_exec(conn, '''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
+    result=rows(db_exec(conn, '''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
         FROM bookings b JOIN rooms r ON b.room_id=r.id JOIN users u ON b.user_id=u.id
-        ORDER BY b.created_at DESC''').fetchall()
-    conn.close(); return jsonify([dict(r) for r in rows])
+        ORDER BY b.created_at DESC'''))
+    conn.close(); return jsonify(result)
 
 @app.route('/api/admin/bookings/<ref>/complete',methods=['POST'])
 def complete_booking(ref):
@@ -537,14 +534,14 @@ def complete_booking(ref):
 def admin_users():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    rows=db_exec(conn, "SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC").fetchall()
-    conn.close(); return jsonify([dict(r) for r in rows])
+    result=rows(db_exec(conn, "SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC"))
+    conn.close(); return jsonify(result)
 
 @app.route('/api/admin/rooms',methods=['GET'])
 def admin_rooms():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
-    conn=get_db(); rows=db_exec(conn, "SELECT * FROM rooms").fetchall()
-    conn.close(); return jsonify([dict(r) for r in rows])
+    conn=get_db(); result=rows(db_exec(conn, "SELECT * FROM rooms"))
+    conn.close(); return jsonify(result)
 
 @app.route('/api/admin/rooms/<int:rid>/toggle',methods=['POST'])
 def toggle_room(rid):
