@@ -617,3 +617,4 @@ def index(): return send_from_directory('templates', 'index.html')
 
 if __name__=='__main__':
     init_db(); app.run(debug=True,port=5000)
+    
