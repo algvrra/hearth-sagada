@@ -1951,7 +1951,7 @@ function buildSummary(){
 async function submitBooking(){
   const btn = document.getElementById('btnSubmit');
   btn.disabled = true; btn.textContent = 'Processing…';
-  const origin = document.getElementById('bCity').value;
+  const origin = document.getElementById('cCity').value;
   const transport = document.querySelector('input[name="btr"]:checked')?.value || 'car';
   const splitRaw  = document.getElementById('bSplit').value;
   const splitGuests = splitRaw ? splitRaw.split(',').map(s=>s.trim()).filter(Boolean) : [];
