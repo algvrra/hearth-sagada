@@ -13,14 +13,31 @@ else:
     import sqlite3
     USE_PG = False
 
+_PG_POOL = None
+
+def get_pool():
+    global _PG_POOL
+    if USE_PG and _PG_POOL is None:
+        from psycopg2 import pool as pg_pool
+        _PG_POOL = pg_pool.SimpleConnectionPool(1, 2, _DB_URL)
+    return _PG_POOL
+
 def get_db():
     if USE_PG:
-        conn = psycopg2.connect(_DB_URL)
+        conn = get_pool().getconn()
         conn.autocommit = False
         return conn
     conn = sqlite3.connect('hearth_sagada.db')
     conn.row_factory = sqlite3.Row
     return conn
+
+def release_db(conn):
+    if USE_PG:
+        try: get_pool().putconn(conn)
+        except: pass
+    else:
+        try: conn.close()
+        except: pass
 
 def qmark(sql):
     return sql.replace('?','%s') if USE_PG else sql
@@ -302,7 +319,7 @@ def init_db():
     conn.commit()
     # Ensure all seeded rooms are visible (available=1)
     c.execute("UPDATE rooms SET available=1 WHERE available IS NULL OR available=0")
-    conn.commit(); conn.close()
+    conn.commit(); release_db(conn)
 
 @app.route('/api/register',methods=['POST'])
 def register():
@@ -313,7 +330,7 @@ def register():
     try:
         conn=get_db()
         db_exec(conn, "INSERT INTO users (name,email,password) VALUES (?,?,?)",(d['name'].strip(),d['email'].strip().lower(),pw))
-        conn.commit(); conn.close(); return jsonify({'success':True})
+        conn.commit(); release_db(conn); return jsonify({'success':True})
     except: return jsonify({'success':False,'error':'Email already registered'}),400
 
 @app.route('/api/login',methods=['POST'])
@@ -324,7 +341,7 @@ def login():
     pw=hashlib.sha256(d['password'].encode()).hexdigest()
     conn=get_db()
     user=db_exec(conn, "SELECT * FROM users WHERE email=? AND password=?",(d['email'].strip().lower(),pw)).fetchone()
-    conn.close()
+    release_db(conn)
     if user:
         session['user_id']=user['id']; session['role']=user['role']
         session['name']=user['name']; session['avatar']=user['avatar'] or ''
@@ -340,7 +357,7 @@ def google_login():
     if not user:
         db_exec(conn, "INSERT INTO users (name,email,password,avatar,google_id) VALUES (?,?,?,?,?)",(d.get('name','Google User'),d['email'],'',d.get('avatar',''),d.get('google_id','')))
         conn.commit(); user=db_exec(conn, "SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
-    conn.close()
+    release_db(conn)
     session['user_id']=user['id']; session['role']=user['role']
     session['name']=user['name']; session['avatar']=user['avatar'] or d.get('avatar','')
     return jsonify({'success':True,'role':user['role'],'name':user['name'],'avatar':user['avatar'] or ''})
@@ -361,22 +378,22 @@ def get_rooms():
     if request.args.get('pet_friendly')=='1': filters.append("pet_friendly=1")
     filters.append("(available=1 OR available IS NULL)")
     if filters: q+=" WHERE "+" AND ".join(filters)
-    cur=db_exec(conn,q,params); result=cur.fetchall(); conn.close()
+    cur=db_exec(conn,q,params); result=cur.fetchall(); release_db(conn)
     return jsonify([dict(r) for r in result])
 
 @app.route('/api/rooms/<int:rid>')
 def get_room(rid):
     conn=get_db()
     room=db_exec(conn, "SELECT * FROM rooms WHERE id=?",(rid,)).fetchone()
-    if not room: conn.close(); return jsonify({'error':'Not found'}),404
+    if not room: release_db(conn); return jsonify({'error':'Not found'}),404
     meals=db_exec(conn, "SELECT * FROM meals WHERE room_id=? ORDER BY meal_type",(rid,)).fetchall()
-    conn.close(); r=dict(room); r['meals']=[dict(m) for m in meals]; return jsonify(r)
+    release_db(conn); r=dict(room); r['meals']=[dict(m) for m in meals]; return jsonify(r)
 
 @app.route('/api/rooms/<int:rid>/booked-dates')
 def booked_dates(rid):
     conn=get_db()
     bks=db_exec(conn, "SELECT checkin,checkout FROM bookings WHERE room_id=? AND status='confirmed'",(rid,)).fetchall()
-    conn.close(); dates=[]
+    release_db(conn); dates=[]
     for b in bks:
         cur=datetime.strptime(b['checkin'],'%Y-%m-%d'); end=datetime.strptime(b['checkout'],'%Y-%m-%d')
         while cur<=end: dates.append(cur.strftime('%Y-%m-%d')); cur+=timedelta(days=1)
@@ -386,7 +403,7 @@ def booked_dates(rid):
 def room_meals(rid):
     conn=get_db()
     meals=db_exec(conn, "SELECT * FROM meals WHERE room_id=? ORDER BY meal_type",(rid,)).fetchall()
-    conn.close(); return jsonify([dict(m) for m in meals])
+    release_db(conn); return jsonify([dict(m) for m in meals])
 
 @app.route('/api/bookings',methods=['POST'])
 def create_booking():
@@ -396,7 +413,7 @@ def create_booking():
         return jsonify({'error':'Missing required fields'}),400
     conn=get_db()
     room=db_exec(conn, "SELECT * FROM rooms WHERE id=?",(d['room_id'],)).fetchone()
-    if not room: conn.close(); return jsonify({'error':'Room not found'}),404
+    if not room: release_db(conn); return jsonify({'error':'Room not found'}),404
     checkin=datetime.strptime(d['checkin'],'%Y-%m-%d'); checkout=datetime.strptime(d['checkout'],'%Y-%m-%d')
     nights=max(1,(checkout-checkin).days); adults=max(1,int(d.get('adults',1)))
     base_total=room['price']*nights
@@ -426,7 +443,7 @@ def create_booking():
         (ref,session['user_id'],d['room_id'],d['checkin'],d['checkout'],
          adults,int(d.get('children',0)),total,payment_method,initial_status,
          travel_hours,origin,transport,json.dumps(d.get('split_guests',[])),meal_plan))
-    conn.commit(); conn.close()
+    conn.commit(); release_db(conn)
     return jsonify({'success':True,'booking_ref':ref,'total':total,'travel_hours':travel_hours,'dist_km':dist_km,'nights':nights})
 
 @app.route('/api/bookings/my')
@@ -435,15 +452,15 @@ def my_bookings():
     conn=get_db()
     result=rows(db_exec(conn, '''SELECT b.*,r.name as room_name FROM bookings b
         JOIN rooms r ON b.room_id=r.id WHERE b.user_id=? ORDER BY b.created_at DESC''',(session['user_id'],)))
-    conn.close(); return jsonify(result)
+    release_db(conn); return jsonify(result)
 
 @app.route('/api/bookings/<ref>/cancel',methods=['POST'])
 def cancel_booking(ref):
     if 'user_id' not in session: return jsonify({'error':'Not authenticated'}),401
     conn=get_db(); bk=db_exec(conn, "SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
-    if not bk: conn.close(); return jsonify({'error':'Not found'}),404
+    if not bk: release_db(conn); return jsonify({'error':'Not found'}),404
     if bk['user_id']!=session['user_id'] and session.get('role')!='admin':
-        conn.close(); return jsonify({'error':'Unauthorized'}),403
+        release_db(conn); return jsonify({'error':'Unauthorized'}),403
     # 48-hour free cancellation window
     checkin=datetime.strptime(bk['checkin'],'%Y-%m-%d')
     hours_until = (checkin - datetime.now()).total_seconds() / 3600
@@ -461,19 +478,19 @@ def cancel_booking(ref):
         late=True
     refund=float(bk['total_price'])
     db_exec(conn, "UPDATE bookings SET status='cancelled',cancellation_fee=? WHERE booking_ref=?",(cancellation_fee,ref))
-    conn.commit(); conn.close()
+    conn.commit(); release_db(conn)
     return jsonify({'success':True,'cancellation_fee':cancellation_fee,'refund':refund,'late_cancel':late,'one_night_rate':one_night})
 
 @app.route('/api/bookings/<ref>/upload-receipt',methods=['POST'])
 def upload_receipt(ref):
     if 'user_id' not in session: return jsonify({'error':'Not authenticated'}),401
     conn=get_db(); bk=db_exec(conn, "SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
-    if not bk: conn.close(); return jsonify({'error':'Not found'}),404
-    if bk['user_id']!=session['user_id']: conn.close(); return jsonify({'error':'Unauthorized'}),403
+    if not bk: release_db(conn); return jsonify({'error':'Not found'}),404
+    if bk['user_id']!=session['user_id']: release_db(conn); return jsonify({'error':'Unauthorized'}),403
     d=request.json or {}
     receipt_note=d.get('receipt_note','Receipt submitted').strip()
     db_exec(conn, "UPDATE bookings SET deposit_receipt=? WHERE booking_ref=?",(receipt_note,ref))
-    conn.commit(); conn.close()
+    conn.commit(); release_db(conn)
     return jsonify({'success':True,'message':'Receipt submitted! Admin will confirm your booking shortly.'})
 
 @app.route('/api/admin/bookings/<ref>/confirm-deposit',methods=['POST'])
@@ -481,7 +498,7 @@ def confirm_deposit(ref):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
     db_exec(conn, "UPDATE bookings SET status='confirmed',deposit_paid=1 WHERE booking_ref=?",(ref,))
-    conn.commit(); conn.close()
+    conn.commit(); release_db(conn)
     return jsonify({'success':True})
 
 def require_admin(): return session.get('role')=='admin'
@@ -508,7 +525,7 @@ def admin_stats():
         b.checkin,b.checkout,b.total_price,b.status FROM bookings b
         JOIN users u ON b.user_id=u.id JOIN rooms r ON b.room_id=r.id
         ORDER BY b.created_at DESC LIMIT 5'''))
-    conn.close()
+    release_db(conn)
     return jsonify({'total':total,'confirmed':confirmed,'pending':pending,'cancelled':cancelled,'completed':completed,
         'revenue':float(revenue),'cancel_fees':float(cancel_fees),'users':users,
         'popular':popular if popular else {},'monthly':monthly,
@@ -521,34 +538,34 @@ def admin_bookings():
     result=rows(db_exec(conn, '''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
         FROM bookings b JOIN rooms r ON b.room_id=r.id JOIN users u ON b.user_id=u.id
         ORDER BY b.created_at DESC'''))
-    conn.close(); return jsonify(result)
+    release_db(conn); return jsonify(result)
 
 @app.route('/api/admin/bookings/<ref>/complete',methods=['POST'])
 def complete_booking(ref):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
     db_exec(conn, "UPDATE bookings SET status='completed' WHERE booking_ref=?",(ref,))
-    conn.commit(); conn.close(); return jsonify({'success':True})
+    conn.commit(); release_db(conn); return jsonify({'success':True})
 
 @app.route('/api/admin/users')
 def admin_users():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
     result=rows(db_exec(conn, "SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC"))
-    conn.close(); return jsonify(result)
+    release_db(conn); return jsonify(result)
 
 @app.route('/api/admin/rooms',methods=['GET'])
 def admin_rooms():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db(); result=rows(db_exec(conn, "SELECT * FROM rooms"))
-    conn.close(); return jsonify(result)
+    release_db(conn); return jsonify(result)
 
 @app.route('/api/admin/rooms/<int:rid>/toggle',methods=['POST'])
 def toggle_room(rid):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
     db_exec(conn, "UPDATE rooms SET available=CASE WHEN available=1 THEN 0 ELSE 1 END WHERE id=?",(rid,))
-    conn.commit(); conn.close(); return jsonify({'success':True})
+    conn.commit(); release_db(conn); return jsonify({'success':True})
 
 
 @app.route('/api/travel-time',methods=['POST'])
@@ -619,5 +636,9 @@ def serve_video(filename):
 @app.route('/')
 def index(): return send_from_directory('templates', 'index.html')
 
+# Run init_db on startup regardless of how the app is launched
+# (covers both gunicorn on Render and python app.py locally)
+init_db()
+
 if __name__=='__main__':
-    init_db(); app.run(debug=True,port=5000)
+    app.run(debug=True,port=5000)
