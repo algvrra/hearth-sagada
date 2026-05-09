@@ -1,79 +1,9 @@
-from flask import Flask, render_template, request, jsonify, session, send_from_directory, Response
-import json, hashlib, uuid, math, os
+from flask import Flask, render_template, request, jsonify, session, send_from_directory
+import sqlite3, json, hashlib, uuid, math
 from datetime import datetime, timedelta
-
-# Database setup — PostgreSQL on Render, SQLite locally
-_DB_URL = os.environ.get('DATABASE_URL', '')
-if _DB_URL.startswith('postgres'):
-    import psycopg2, psycopg2.extras
-    if _DB_URL.startswith('postgres://'):
-        _DB_URL = _DB_URL.replace('postgres://', 'postgresql://', 1)
-    USE_PG = True
-else:
-    import sqlite3
-    USE_PG = False
-
-_PG_POOL = None
-
-def get_pool():
-    global _PG_POOL
-    if USE_PG and _PG_POOL is None:
-        from psycopg2 import pool as pg_pool
-        _PG_POOL = pg_pool.SimpleConnectionPool(1, 2, _DB_URL)
-    return _PG_POOL
-
-def get_db():
-    if USE_PG:
-        conn = get_pool().getconn()
-        conn.autocommit = False
-        return conn
-    conn = sqlite3.connect('hearth_sagada.db')
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def release_db(conn):
-    if USE_PG:
-        try: get_pool().putconn(conn)
-        except: pass
-    else:
-        try: conn.close()
-        except: pass
-
-def qmark(sql):
-    return sql.replace('?','%s') if USE_PG else sql
-
-def rows(cur):
-    if USE_PG:
-        cols = [d[0] for d in cur.description] if cur.description else []
-        return [dict(zip(cols,r)) for r in (cur.fetchall() or [])]
-    return [dict(r) for r in cur.fetchall()]
-
-def row1(cur):
-    if USE_PG:
-        r = cur.fetchone()
-        if r is None: return None
-        cols = [d[0] for d in cur.description]
-        return dict(zip(cols,r))
-    r = cur.fetchone()
-    return dict(r) if r else None
-
-def scalar(cur):
-    r = cur.fetchone()
-    return r[0] if r else 0
-
-def db_exec(conn, sql, params=()):
-    sql = qmark(sql)
-    if USE_PG:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute(sql, params if params else None)
-        return cur
-    return conn.execute(sql, params)
 
 app = Flask(__name__)
 app.secret_key = 'hearth_sagada_2026_secret'
-app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SECURE'] = False
 GOOGLE_CLIENT_ID = "470534247051-vh1aelihkqbfoa1lrn571hfvo2reujfm.apps.googleusercontent.com"
 GOOGLE_CLIENT_SECRET = "GOCSPX-IWk8KT7gdRw9qh_NR1zMkKtYGex"
 DB = 'hearth_sagada.db'
@@ -104,222 +34,77 @@ def haversine(lat1,lon1,lat2,lon2):
     a=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return 2*R*math.asin(math.sqrt(a))
 
+def get_db():
+    conn=sqlite3.connect(DB); conn.row_factory=sqlite3.Row; return conn
+
 def init_db():
-    conn=get_db()
-    c=conn.cursor() if USE_PG else conn
-    if USE_PG:
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
+    conn=sqlite3.connect(DB); c=conn.cursor()
+    c.executescript('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL DEFAULT '', avatar TEXT DEFAULT '',
             role TEXT DEFAULT 'user', google_id TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS rooms (
-            id SERIAL PRIMARY KEY, name TEXT NOT NULL, description TEXT, price REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS rooms (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL, description TEXT, price REAL NOT NULL,
             rating REAL DEFAULT 4.5, reviews INTEGER DEFAULT 0,
             location TEXT DEFAULT 'Sagada, Mtn. Province',
             max_guests INTEGER DEFAULT 4, pet_friendly INTEGER DEFAULT 0,
             pet_policy TEXT DEFAULT '', meal_included TEXT DEFAULT 'breakfast',
-            amenities TEXT, photos TEXT DEFAULT '[]', available INTEGER DEFAULT 1)''')
-        c.execute('''CREATE TABLE IF NOT EXISTS meals (
-            id SERIAL PRIMARY KEY, room_id INTEGER, meal_type TEXT,
+            amenities TEXT, photos TEXT DEFAULT '[]', available INTEGER DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS meals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room_id INTEGER, date TEXT, meal_type TEXT,
             dish_name TEXT, description TEXT,
-            UNIQUE(room_id, meal_type, dish_name))''')
-        c.execute('''CREATE TABLE IF NOT EXISTS bookings (
-            id SERIAL PRIMARY KEY, booking_ref TEXT UNIQUE NOT NULL,
-            user_id INTEGER, room_id INTEGER, checkin TEXT NOT NULL, checkout TEXT NOT NULL,
+            FOREIGN KEY (room_id) REFERENCES rooms(id));
+        CREATE TABLE IF NOT EXISTS bookings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_ref TEXT UNIQUE NOT NULL, user_id INTEGER, room_id INTEGER,
+            checkin TEXT NOT NULL, checkout TEXT NOT NULL,
             adults INTEGER DEFAULT 1, children INTEGER DEFAULT 0,
             total_price REAL, payment_method TEXT DEFAULT 'person',
             status TEXT DEFAULT 'pending_deposit', cancellation_fee REAL DEFAULT 0,
             deposit_paid INTEGER DEFAULT 0, deposit_receipt TEXT DEFAULT '',
             travel_hours REAL DEFAULT 0, origin_city TEXT DEFAULT '',
             transport TEXT DEFAULT 'car', split_guests TEXT DEFAULT '[]',
-            meal_plan TEXT DEFAULT 'with',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-        conn.commit()
-    else:
-        conn.executescript('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL, email TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL DEFAULT '', avatar TEXT DEFAULT '',
-                role TEXT DEFAULT 'user', google_id TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS rooms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL, description TEXT, price REAL NOT NULL,
-                rating REAL DEFAULT 4.5, reviews INTEGER DEFAULT 0,
-                location TEXT DEFAULT 'Sagada, Mtn. Province',
-                max_guests INTEGER DEFAULT 4, pet_friendly INTEGER DEFAULT 0,
-                pet_policy TEXT DEFAULT '', meal_included TEXT DEFAULT 'breakfast',
-                amenities TEXT, photos TEXT DEFAULT '[]', available INTEGER DEFAULT 1);
-            CREATE TABLE IF NOT EXISTS meals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                room_id INTEGER, meal_type TEXT,
-                dish_name TEXT, description TEXT,
-                UNIQUE(room_id, meal_type, dish_name));
-            CREATE TABLE IF NOT EXISTS bookings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                booking_ref TEXT UNIQUE NOT NULL, user_id INTEGER, room_id INTEGER,
-                checkin TEXT NOT NULL, checkout TEXT NOT NULL,
-                adults INTEGER DEFAULT 1, children INTEGER DEFAULT 0,
-                total_price REAL, payment_method TEXT DEFAULT 'person',
-                status TEXT DEFAULT 'pending_deposit', cancellation_fee REAL DEFAULT 0,
-                deposit_paid INTEGER DEFAULT 0, deposit_receipt TEXT DEFAULT '',
-                travel_hours REAL DEFAULT 0, origin_city TEXT DEFAULT '',
-                transport TEXT DEFAULT 'car', split_guests TEXT DEFAULT '[]',
-                meal_plan TEXT DEFAULT 'with',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
-        ''')
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (room_id) REFERENCES rooms(id));
+    ''')
     ap=hashlib.sha256('admin123'.encode()).hexdigest()
-    if USE_PG:
-        c.execute("INSERT INTO users (name,email,password,role) VALUES (%s,%s,%s,%s) ON CONFLICT (email) DO NOTHING",('Admin','admin@hearth.com',ap,'admin'))
-    else:
-        c.execute("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)",('Admin','admin@hearth.com',ap,'admin'))
+    c.execute("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)",('Admin','admin@hearth.com',ap,'admin'))
     up=hashlib.sha256('user123'.encode()).hexdigest()
-    if USE_PG:
-        c.execute("INSERT INTO users (name,email,password,role) VALUES (%s,%s,%s,%s) ON CONFLICT (email) DO NOTHING",('Juan dela Cruz','juan@email.com',up,'user'))
-    else:
-        c.execute("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)",('Juan dela Cruz','juan@email.com',up,'user'))
+    c.execute("INSERT OR IGNORE INTO users (name,email,password,role) VALUES (?,?,?,?)",('Juan dela Cruz','juan@email.com',up,'user'))
     rooms=[
-        ('Sumaguing Cave Room',
-         'A uniquely designed room featuring stone-textured walls and earthy tones to mimic the natural beauty of Sagada\'s famous caves. This ground-floor unit offers a cool, quiet atmosphere and is the perfect "base camp" for adventurers planning an early morning spelunking trip.',
-         2500,4.5,128,4,0,'','breakfast,dinner',
-         '["WiFi","Stone Interiors","Hot Shower","Cave Access"]',
-         '["/static/sumaguing1.png","/static/sumaguing2.png","/static/sumaguing3.png","/static/sumaguing4.png"]',
-         'South Road, Ambasing, Sagada (near the Lumiang-Sumaguing Cave entrance)'),
-        ('Inandakos BnB',
-         'A family-owned bed and breakfast located on a quiet ridge away from the busy main road. Famous for its large French windows, authentic wooden interiors, and stunning views of cathedral rock formations and pine forests.',
-         3200,4.7,95,4,0,'','breakfast',
-         '["WiFi","French Windows","Pine Forest View","Wooden Interiors"]',
-         '["/static/Inandakos1.png","/static/Inandakos2.png","/static/Inandakos3.png","/static/Inandakos4.png"]',
-         'Sitio Kinlibed, Barangay Dagdag, Sagada'),
-        ('Kanip-aw Pines View',
-         'This lodge is tucked into a pine-filled slope, offering guests a direct view of the mountain valleys. Popular for its large communal spaces and affordable, cozy rooms that capture the chilly mountain atmosphere.',
-         4500,4.8,200,6,1,'Pet-friendly lodge with communal garden. Dogs & cats welcome. Please inform us in advance.','breakfast,lunch,dinner',
-         '["WiFi","Valley View","Communal Lounge","Pine Terrace"]',
-         '["/static/kanipaw1.png","/static/kanipaw2.png","/static/kanipaw3.png","/static/kanipaw4.png"]',
-         'Kinlibed, Barangay Dagdag, Sagada (near the Lemon Pie House)'),
-        ('Agape Log Cabin',
-         'A classic 3-star log cabin guest house known for its warm, rustic charm and hospitable service. Features rooms with mountain views and is conveniently located steps away from the Sagada Public Market and the Lemon Pie House.',
-         2800,4.6,74,3,0,'','breakfast',
-         '["WiFi","Log Cabin","Mountain View","Market Nearby"]',
-         '["/static/agape1.png","/static/agape2.png","/static/agape3.png","/static/agape4.png"]',
-         'South Road, Dagdag, Sagada'),
-        ('Bomod-ok Falls Cabin',
-         'A rustic, standalone wooden cabin located at the edge of the northern cliffs. Features a private balcony where you can hear the distant rush of the "Big Falls." A favorite for hikers who want to stay close to the trail leading down to the Bomod-ok natural pools.',
-         3800,4.9,310,5,1,'Small pets only (under 10kg). ₱300 deposit, refundable after checkout inspection.','breakfast,lunch',
-         '["WiFi","Private Balcony","Cliff Edge","Hiking Trail Access"]',
-         '["/static/bomodok1.png","/static/bomodok2.png","/static/bomodok3.png","/static/bomodok4.png"]',
-         'Barangay Fidelisan, Northern Sagada (near the rice terrace trail)'),
-        ('Isabelo\'s Inn',
-         'A centrally located inn and cafe with cozy wooden interiors and a cabin-like feel. It serves as an ideal hub for travelers due to its proximity to the bus terminal, market, and cultural sites like the Ganduyan Museum.',
-         2200,4.4,56,3,0,'','breakfast',
-         '["WiFi","Cafe On-site","Central Location","Wooden Interiors"]',
-         '["/static/isabelo1.png","/static/isabelo2.png","/static/isabelo3.png","/static/isabelo4.png"]',
-         'Poblacion, Sagada (Town Proper)'),
-        ('Shamrock Tavern',
-         'A long-standing landmark in the town proper, known as a social hub for backpackers. Offers basic, budget-friendly rooms and features a balcony overlooking the bustling town center.',
-         1800,4.2,88,4,0,'','breakfast',
-         '["WiFi","Town Balcony","Budget-Friendly","Backpacker Hub"]',
-         '["/static/shamrock1.png","/static/shamrock2.png","/static/shamrock3.png","/static/shamrock4.png"]',
-         'Poblacion, Sagada (near the main intersection/bus stop)'),
-        ('Lake Danum Nook',
-         'A small, intimate cottage designed specifically for couples and sunset lovers. Located 4km away from the busy town center, this "nook" offers a peaceful lakeside view and easy access to the most famous sunset viewing spot in the Mountain Province.',
-         3500,4.7,42,2,0,'','breakfast,dinner',
-         '["WiFi","Lake View","Sunset Deck","Romantic Setting"]',
-         '["/static/lakedanum1.png","/static/lakedanum2.png","/static/lakedanum3.png","/static/lakedanum4.png"]',
-         'Besao Road, Western Sagada (overlooking the lake)'),
-        ('Marlboro Hills Attic',
-         'A spacious, high-ceiling loft designed for large groups and families. Features multiple floor mattresses and large windows facing the east, allowing guests to wake up to the famous "Sea of Clouds" view without even leaving their room.',
-         5500,4.8,63,8,0,'','breakfast,lunch',
-         '["WiFi","Sea of Clouds View","Loft Style","Group Friendly"]',
-         '["/static/marlboro1.png","/static/marlboro2.png","/static/marlboro3.png","/static/marlboro4.png"]',
-         'Eastern Ridge, Barangay Sta. Monica, Sagada'),
-        ('The Shire of Sagada',
-         'A unique, Hobbit-themed accommodation featuring distinctive round doors and earthy architecture. Offers a higher-end, whimsical stay with cozy interiors inspired by fantasy settings, nestled in a quiet area near the caves.',
-         4800,4.9,175,4,0,'','breakfast,dinner',
-         '["WiFi","Round Doors","Hobbit Theme","Fireplace"]',
-         '["/static/shire1.png","/static/shire2.png","/static/shire3.png","/static/shire4.png"]',
-         'South Road, Ambasing, Sagada, Mountain Province'),
-        ('St. Joseph\'s Resthouse',
-         'One of the most iconic and historic lodging houses in Sagada, managed by the Episcopal Church. Located on a hill right next to the Church of Saint Mary the Virgin, offering a peaceful, heritage-rich environment with sprawling gardens.',
-         2600,4.6,220,5,0,'','breakfast',
-         '["WiFi","Heritage Site","Garden","Cathedral Views"]',
-         '["/static/stjoseph1.png","/static/stjoseph2.png","/static/stjoseph3.png","/static/stjoseph4.png"]',
-         'Cathedral Hill, Poblacion, Sagada'),
-        ('See Too Ville, Gaia Villa',
-         'A charming nature retreat focused on relaxation and stunning vistas. Every room is equipped with a private balcony providing panoramic views of the Sagada mountain ranges. Also famous for its proximity to the ridge used in the film That Thing Called Tadhana, offering serene sunset views.',
-         3900,4.7,98,4,0,'','breakfast,dinner',
-         '["WiFi","Private Balcony","Panoramic Views","Eco-Friendly"]',
-         '["/static/seetoo1.png","/static/seetoo2.png","/static/seetoo3.png","/static/seetoo4.png"]',
-         'South Road, Ambasing, Sagada (near the Gaia Sagada Cafe)'),
-        ('Mapiya-aw Pension',
-         'A family-style pension inn located in a slightly elevated area, offering privacy and peace. Each room features a private terrace for soaking in the mountain air, and is known for having ample parking for those driving to Sagada.',
-         2400,4.5,67,4,0,'','breakfast',
-         '["WiFi","Private Terrace","Ample Parking","Mountain Air"]',
-         '["/static/mapiyaaw1.png","/static/mapiyaaw2.png","/static/mapiyaaw3.png","/static/mapiyaaw4.png"]',
-         'South Road, near the border of Poblacion and Dagdag'),
+        ('Cozy Pine Cabin','A warm rustic cabin surrounded by pine trees with breathtaking mountain views.',2500,4.5,128,4,1,'Pets welcome! Max 2 pets. ₱200 pet cleaning fee applies. Leashed in common areas.','breakfast,dinner','["WiFi","Fireplace","Mountain View","Hot Shower"]','["🌲","🏔️","🌿","🔥"]'),
+        ('Forest Treehouse','Elevated among the pines, this treehouse offers a magical forest experience.',3200,4.7,95,2,0,'','breakfast','["WiFi","Balcony","Forest View","Reading Nook"]','["🌳","🦋","🌲","🍃"]'),
+        ('Heritage Stone Lodge',"Built with local stone, this lodge echoes Sagada's rich cultural heritage.",4500,4.8,200,6,1,'Pet-friendly lodge with fenced garden. Dogs & cats allowed. Please inform us in advance.','breakfast,lunch,dinner','["WiFi","Fireplace","Kitchen","Garden"]','["🏡","🌿","🔥","🌄"]'),
+        ('Mist Valley Cottage','Wake up to mist rolling through the valley in this peaceful hillside cottage.',2800,4.6,74,3,0,'','breakfast','["WiFi","Garden","Valley View","BBQ Area"]','["🌫️","🌄","🌸","🏡"]'),
+        ('Echo Valley Retreat','Adjacent to the famous Echo Valley, perfect for early morning fog walks.',3800,4.9,310,5,1,'Small pets only (under 10kg). ₱300 deposit, refundable after checkout inspection.','breakfast,lunch','["WiFi","Fireplace","Hiking Trail","Sunset Deck"]','["⛰️","🌅","🔥","🦅"]'),
     ]
-    # Re-seed rooms every startup
-    c.execute("DELETE FROM rooms")
-    conn.commit()
     for r in rooms:
-        name,description,price,rating,reviews,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos,location = r
-        if USE_PG:
-            c.execute("INSERT INTO rooms (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                      (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos))
-        else:
-            c.execute("INSERT INTO rooms (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                      (name,description,price,rating,reviews,location,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos))
-    # Meals start empty — admin inputs dishes per room per day via the Admin Panel
-    # Do NOT wipe existing meals on restart so admin entries are preserved
-    # Migrate existing DBs: add meal_plan column if missing
-    try:
-        if USE_PG:
-            c.execute("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS meal_plan TEXT DEFAULT 'with'")
-        else:
-            c.execute("ALTER TABLE bookings ADD COLUMN meal_plan TEXT DEFAULT 'with'")
-        conn.commit()
-    except:
-        pass
-    # Migrate meals table: remove date column and duplicates if old schema exists
-    try:
-        if USE_PG:
-            c.execute("SELECT column_name FROM information_schema.columns WHERE table_name='meals'")
-            cols = [r[0] for r in c.fetchall()]
-        else:
-            cols = [row[1] for row in conn.execute("PRAGMA table_info(meals)").fetchall()]
-        if 'date' in cols:
-            # Recreate meals table without date, keeping only unique rows
-            c.executescript('''
-                CREATE TABLE IF NOT EXISTS meals_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    room_id INTEGER, meal_type TEXT,
-                    dish_name TEXT, description TEXT,
-                    UNIQUE(room_id, meal_type, dish_name));
-                INSERT INTO meals_new (room_id, meal_type, dish_name, description)
-                    SELECT room_id, meal_type, dish_name, description FROM meals;
-                DROP TABLE meals;
-                ALTER TABLE meals_new RENAME TO meals;
-            ''')
-            conn.commit()
-    except:
-        pass
-    # Migrate old DBs: ensure available column exists on rooms
-    try:
-        if USE_PG:
-            c.execute("ALTER TABLE rooms ADD COLUMN IF NOT EXISTS available INTEGER DEFAULT 1")
-        else:
-            c.execute("ALTER TABLE rooms ADD COLUMN available INTEGER DEFAULT 1")
-        conn.commit()
-    except:
-        pass
-    # Fix any rooms where available is NULL
-    c.execute("UPDATE rooms SET available=1 WHERE available IS NULL")
-    conn.commit()
-    # Ensure all seeded rooms are visible (available=1)
-    c.execute("UPDATE rooms SET available=1 WHERE available IS NULL OR available=0")
-    conn.commit(); release_db(conn)
+        c.execute("INSERT OR IGNORE INTO rooms (name,description,price,rating,reviews,max_guests,pet_friendly,pet_policy,meal_included,amenities,photos) VALUES (?,?,?,?,?,?,?,?,?,?,?)",r)
+    menu=[
+        ('breakfast','Tapsilog','Beef tapa with garlic rice and egg'),
+        ('breakfast','Champorado','Chocolate rice porridge with tuyo'),
+        ('breakfast','Longsilog','Longanisa with sinangag and itlog'),
+        ('breakfast','Pandesal & Coffee','Fresh-baked pandesal with local Sagada coffee'),
+        ('lunch','Kare-Kare','Oxtail in peanut sauce with bagoong'),
+        ('lunch','Sinigang na Baboy','Pork ribs in tamarind broth'),
+        ('lunch','Bulalo','Beef bone marrow soup with corn and cabbage'),
+        ('dinner','Lechon Kawali','Crispy deep-fried pork belly'),
+        ('dinner','Pinakbet','Mixed vegetables in shrimp paste'),
+        ('dinner','Adobong Manok','Chicken adobo in vinegar and soy sauce'),
+    ]
+    today=datetime.now()
+    for i in range(7):
+        day=(today+timedelta(days=i)).strftime('%Y-%m-%d')
+        for rid in range(1,6):
+            for m in menu:
+                c.execute("INSERT OR IGNORE INTO meals (room_id,date,meal_type,dish_name,description) VALUES (?,?,?,?,?)",(rid,day,m[0],m[1],m[2]))
+    conn.commit(); conn.close()
 
 @app.route('/api/register',methods=['POST'])
 def register():
@@ -329,8 +114,8 @@ def register():
     pw=hashlib.sha256(d['password'].encode()).hexdigest()
     try:
         conn=get_db()
-        db_exec(conn, "INSERT INTO users (name,email,password) VALUES (?,?,?)",(d['name'].strip(),d['email'].strip().lower(),pw))
-        conn.commit(); release_db(conn); return jsonify({'success':True})
+        conn.execute("INSERT INTO users (name,email,password) VALUES (?,?,?)",(d['name'].strip(),d['email'].strip().lower(),pw))
+        conn.commit(); conn.close(); return jsonify({'success':True})
     except: return jsonify({'success':False,'error':'Email already registered'}),400
 
 @app.route('/api/login',methods=['POST'])
@@ -340,8 +125,8 @@ def login():
         return jsonify({'success':False,'error':'Email and password required'}),400
     pw=hashlib.sha256(d['password'].encode()).hexdigest()
     conn=get_db()
-    user=db_exec(conn, "SELECT * FROM users WHERE email=? AND password=?",(d['email'].strip().lower(),pw)).fetchone()
-    release_db(conn)
+    user=conn.execute("SELECT * FROM users WHERE email=? AND password=?",(d['email'].strip().lower(),pw)).fetchone()
+    conn.close()
     if user:
         session['user_id']=user['id']; session['role']=user['role']
         session['name']=user['name']; session['avatar']=user['avatar'] or ''
@@ -353,11 +138,11 @@ def google_login():
     d=request.json or {}
     if not d.get('email'): return jsonify({'success':False,'error':'Invalid Google data'}),400
     conn=get_db()
-    user=db_exec(conn, "SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
+    user=conn.execute("SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
     if not user:
-        db_exec(conn, "INSERT INTO users (name,email,password,avatar,google_id) VALUES (?,?,?,?,?)",(d.get('name','Google User'),d['email'],'',d.get('avatar',''),d.get('google_id','')))
-        conn.commit(); user=db_exec(conn, "SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
-    release_db(conn)
+        conn.execute("INSERT INTO users (name,email,password,avatar,google_id) VALUES (?,?,?,?,?)",(d.get('name','Google User'),d['email'],'',d.get('avatar',''),d.get('google_id','')))
+        conn.commit(); user=conn.execute("SELECT * FROM users WHERE email=?",(d['email'],)).fetchone()
+    conn.close()
     session['user_id']=user['id']; session['role']=user['role']
     session['name']=user['name']; session['avatar']=user['avatar'] or d.get('avatar','')
     return jsonify({'success':True,'role':user['role'],'name':user['name'],'avatar':user['avatar'] or ''})
@@ -376,24 +161,25 @@ def get_rooms():
     conn=get_db(); q="SELECT * FROM rooms"; params=[]
     filters=[]
     if request.args.get('pet_friendly')=='1': filters.append("pet_friendly=1")
-    filters.append("(available=1 OR available IS NULL)")
+    filters.append("available=1")
     if filters: q+=" WHERE "+" AND ".join(filters)
-    cur=db_exec(conn,q,params); result=cur.fetchall(); release_db(conn)
-    return jsonify([dict(r) for r in result])
+    rows=conn.execute(q,params).fetchall(); conn.close()
+    return jsonify([dict(r) for r in rows])
 
 @app.route('/api/rooms/<int:rid>')
 def get_room(rid):
     conn=get_db()
-    room=db_exec(conn, "SELECT * FROM rooms WHERE id=?",(rid,)).fetchone()
-    if not room: release_db(conn); return jsonify({'error':'Not found'}),404
-    meals=db_exec(conn, "SELECT * FROM meals WHERE room_id=? ORDER BY meal_type",(rid,)).fetchall()
-    release_db(conn); r=dict(room); r['meals']=[dict(m) for m in meals]; return jsonify(r)
+    room=conn.execute("SELECT * FROM rooms WHERE id=?",(rid,)).fetchone()
+    if not room: conn.close(); return jsonify({'error':'Not found'}),404
+    today=datetime.now().strftime('%Y-%m-%d')
+    meals=conn.execute("SELECT * FROM meals WHERE room_id=? AND date=? ORDER BY meal_type",(rid,today)).fetchall()
+    conn.close(); r=dict(room); r['meals']=[dict(m) for m in meals]; return jsonify(r)
 
 @app.route('/api/rooms/<int:rid>/booked-dates')
 def booked_dates(rid):
     conn=get_db()
-    bks=db_exec(conn, "SELECT checkin,checkout FROM bookings WHERE room_id=? AND status='confirmed'",(rid,)).fetchall()
-    release_db(conn); dates=[]
+    bks=conn.execute("SELECT checkin,checkout FROM bookings WHERE room_id=? AND status='confirmed'",(rid,)).fetchall()
+    conn.close(); dates=[]
     for b in bks:
         cur=datetime.strptime(b['checkin'],'%Y-%m-%d'); end=datetime.strptime(b['checkout'],'%Y-%m-%d')
         while cur<=end: dates.append(cur.strftime('%Y-%m-%d')); cur+=timedelta(days=1)
@@ -401,9 +187,9 @@ def booked_dates(rid):
 
 @app.route('/api/rooms/<int:rid>/meals')
 def room_meals(rid):
-    conn=get_db()
-    meals=db_exec(conn, "SELECT * FROM meals WHERE room_id=? ORDER BY meal_type",(rid,)).fetchall()
-    release_db(conn); return jsonify([dict(m) for m in meals])
+    conn=get_db(); today=datetime.now().strftime('%Y-%m-%d')
+    meals=conn.execute("SELECT * FROM meals WHERE room_id=? AND date>=? ORDER BY date,meal_type",(rid,today)).fetchall()
+    conn.close(); return jsonify([dict(m) for m in meals])
 
 @app.route('/api/bookings',methods=['POST'])
 def create_booking():
@@ -412,17 +198,10 @@ def create_booking():
     if not d.get('room_id') or not d.get('checkin') or not d.get('checkout'):
         return jsonify({'error':'Missing required fields'}),400
     conn=get_db()
-    room=db_exec(conn, "SELECT * FROM rooms WHERE id=?",(d['room_id'],)).fetchone()
-    if not room: release_db(conn); return jsonify({'error':'Room not found'}),404
+    room=conn.execute("SELECT * FROM rooms WHERE id=?",(d['room_id'],)).fetchone()
+    if not room: conn.close(); return jsonify({'error':'Room not found'}),404
     checkin=datetime.strptime(d['checkin'],'%Y-%m-%d'); checkout=datetime.strptime(d['checkout'],'%Y-%m-%d')
-    nights=max(1,(checkout-checkin).days); adults=max(1,int(d.get('adults',1)))
-    base_total=room['price']*nights
-    # Meal plan pricing: base price = no meal; +20% with meal, -20% without meal
-    meal_plan=d.get('meal_plan','with')
-    if meal_plan=='with':
-        total=round(base_total*1.20,2)
-    else:
-        total=round(base_total*0.80,2)
+    nights=max(1,(checkout-checkin).days); adults=max(1,int(d.get('adults',1))); total=room['price']*nights
     ref=f"HB{checkin.strftime('%Y%m%d')}-{str(uuid.uuid4())[:4].upper()}"
     origin=d.get('origin_city',''); transport=d.get('transport','car')
     travel_hours=0; dist_km=0
@@ -436,69 +215,69 @@ def create_booking():
     # Pay in Person → pending_deposit until ₱500 deposit is uploaded
     # GCash → confirmed immediately (full payment sent)
     initial_status = 'pending_deposit' if payment_method == 'person' else 'confirmed'
-    db_exec(conn, '''INSERT INTO bookings
+    conn.execute('''INSERT INTO bookings
         (booking_ref,user_id,room_id,checkin,checkout,adults,children,
-         total_price,payment_method,status,travel_hours,origin_city,transport,split_guests,meal_plan)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+         total_price,payment_method,status,travel_hours,origin_city,transport,split_guests)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
         (ref,session['user_id'],d['room_id'],d['checkin'],d['checkout'],
          adults,int(d.get('children',0)),total,payment_method,initial_status,
-         travel_hours,origin,transport,json.dumps(d.get('split_guests',[])),meal_plan))
-    conn.commit(); release_db(conn)
+         travel_hours,origin,transport,json.dumps(d.get('split_guests',[]))))
+    conn.commit(); conn.close()
     return jsonify({'success':True,'booking_ref':ref,'total':total,'travel_hours':travel_hours,'dist_km':dist_km,'nights':nights})
 
 @app.route('/api/bookings/my')
 def my_bookings():
     if 'user_id' not in session: return jsonify([])
     conn=get_db()
-    result=rows(db_exec(conn, '''SELECT b.*,r.name as room_name FROM bookings b
-        JOIN rooms r ON b.room_id=r.id WHERE b.user_id=? ORDER BY b.created_at DESC''',(session['user_id'],)))
-    release_db(conn); return jsonify(result)
+    rows=conn.execute('''SELECT b.*,r.name as room_name FROM bookings b
+        JOIN rooms r ON b.room_id=r.id WHERE b.user_id=? ORDER BY b.created_at DESC''',(session['user_id'],)).fetchall()
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/bookings/<ref>/cancel',methods=['POST'])
 def cancel_booking(ref):
     if 'user_id' not in session: return jsonify({'error':'Not authenticated'}),401
-    conn=get_db(); bk=db_exec(conn, "SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
-    if not bk: release_db(conn); return jsonify({'error':'Not found'}),404
+    conn=get_db(); bk=conn.execute("SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
+    if not bk: conn.close(); return jsonify({'error':'Not found'}),404
     if bk['user_id']!=session['user_id'] and session.get('role')!='admin':
-        release_db(conn); return jsonify({'error':'Unauthorized'}),403
+        conn.close(); return jsonify({'error':'Unauthorized'}),403
     # 48-hour free cancellation window
     checkin=datetime.strptime(bk['checkin'],'%Y-%m-%d')
     hours_until = (checkin - datetime.now()).total_seconds() / 3600
-    room=db_exec(conn, "SELECT price FROM rooms WHERE id=?",(bk['room_id'],)).fetchone()
+    room=conn.execute("SELECT price FROM rooms WHERE id=?",(bk['room_id'],)).fetchone()
     one_night=float(room['price']) if room else 0
-    deposit=500.0
-    deposit_was_paid = bool(bk['deposit_paid'])
-    if hours_until >= 48 or not deposit_was_paid:
-        # Free cancellation OR deposit was never actually received — no fee
+    deposit=500.0  # security deposit amount
+    if hours_until >= 48:
+        # Free cancellation — refund full amount including deposit
         cancellation_fee=0
+        refund=float(bk['total_price'])
         late=False
     else:
-        # Late cancellation AND deposit was confirmed — keep ₱500 as cancellation fee
+        # Late cancellation — keep ₱500 deposit as cancellation fee
         cancellation_fee=deposit
+        refund=float(bk['total_price'])
         late=True
-    refund=float(bk['total_price'])
-    db_exec(conn, "UPDATE bookings SET status='cancelled',cancellation_fee=? WHERE booking_ref=?",(cancellation_fee,ref))
-    conn.commit(); release_db(conn)
+    conn.execute("UPDATE bookings SET status='cancelled',cancellation_fee=? WHERE booking_ref=?",(cancellation_fee,ref))
+    conn.commit(); conn.close()
     return jsonify({'success':True,'cancellation_fee':cancellation_fee,'refund':refund,'late_cancel':late,'one_night_rate':one_night})
 
 @app.route('/api/bookings/<ref>/upload-receipt',methods=['POST'])
 def upload_receipt(ref):
     if 'user_id' not in session: return jsonify({'error':'Not authenticated'}),401
-    conn=get_db(); bk=db_exec(conn, "SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
-    if not bk: release_db(conn); return jsonify({'error':'Not found'}),404
-    if bk['user_id']!=session['user_id']: release_db(conn); return jsonify({'error':'Unauthorized'}),403
+    conn=get_db(); bk=conn.execute("SELECT * FROM bookings WHERE booking_ref=?",(ref,)).fetchone()
+    if not bk: conn.close(); return jsonify({'error':'Not found'}),404
+    if bk['user_id']!=session['user_id']: conn.close(); return jsonify({'error':'Unauthorized'}),403
     d=request.json or {}
     receipt_note=d.get('receipt_note','Receipt submitted').strip()
-    db_exec(conn, "UPDATE bookings SET deposit_receipt=? WHERE booking_ref=?",(receipt_note,ref))
-    conn.commit(); release_db(conn)
+    conn.execute("UPDATE bookings SET deposit_receipt=? WHERE booking_ref=?",(receipt_note,ref))
+    conn.commit(); conn.close()
     return jsonify({'success':True,'message':'Receipt submitted! Admin will confirm your booking shortly.'})
 
 @app.route('/api/admin/bookings/<ref>/confirm-deposit',methods=['POST'])
 def confirm_deposit(ref):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    db_exec(conn, "UPDATE bookings SET status='confirmed',deposit_paid=1 WHERE booking_ref=?",(ref,))
-    conn.commit(); release_db(conn)
+    conn.execute("UPDATE bookings SET status='confirmed',deposit_paid=1 WHERE booking_ref=?",(ref,))
+    conn.commit(); conn.close()
     return jsonify({'success':True})
 
 def require_admin(): return session.get('role')=='admin'
@@ -507,7 +286,7 @@ def require_admin(): return session.get('role')=='admin'
 def admin_stats():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    def q(sql,*args): return scalar(db_exec(conn, sql, args))
+    def q(sql,*args): return conn.execute(sql,args).fetchone()[0]
     total=q("SELECT COUNT(*) FROM bookings")
     confirmed=q("SELECT COUNT(*) FROM bookings WHERE status='confirmed'")
     pending=q("SELECT COUNT(*) FROM bookings WHERE status='pending_deposit'")
@@ -516,57 +295,83 @@ def admin_stats():
     revenue=q("SELECT COALESCE(SUM(total_price),0) FROM bookings WHERE status IN ('confirmed','completed')")
     cancel_fees=q("SELECT COALESCE(SUM(cancellation_fee),0) FROM bookings WHERE status='cancelled'")
     users=q("SELECT COUNT(*) FROM users WHERE role='user'")
-    popular=row1(db_exec(conn, '''SELECT r.name,COUNT(*) as c FROM bookings b
-        JOIN rooms r ON b.room_id=r.id GROUP BY r.id ORDER BY c DESC LIMIT 1'''))
-    month_sql = ("SELECT to_char(created_at,'MM') as mo,COUNT(*) as c,COALESCE(SUM(total_price),0) as rev FROM bookings WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo" if USE_PG
-        else "SELECT strftime('%m',created_at) as mo,COUNT(*) as c,COALESCE(SUM(total_price),0) as rev FROM bookings WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo")
-    monthly=rows(db_exec(conn, month_sql))
-    recent=rows(db_exec(conn, '''SELECT b.booking_ref,u.name as guest,r.name as room,
+    popular=conn.execute('''SELECT r.name,COUNT(*) as c FROM bookings b
+        JOIN rooms r ON b.room_id=r.id GROUP BY r.id ORDER BY c DESC LIMIT 1''').fetchone()
+    monthly=conn.execute('''SELECT strftime('%m',created_at) as mo,COUNT(*) as c,
+        COALESCE(SUM(total_price),0) as rev FROM bookings
+        WHERE status IN ('confirmed','completed') GROUP BY mo ORDER BY mo''').fetchall()
+    recent=conn.execute('''SELECT b.booking_ref,u.name as guest,r.name as room,
         b.checkin,b.checkout,b.total_price,b.status FROM bookings b
         JOIN users u ON b.user_id=u.id JOIN rooms r ON b.room_id=r.id
-        ORDER BY b.created_at DESC LIMIT 5'''))
-    release_db(conn)
+        ORDER BY b.created_at DESC LIMIT 5''').fetchall()
+    conn.close()
     return jsonify({'total':total,'confirmed':confirmed,'pending':pending,'cancelled':cancelled,'completed':completed,
         'revenue':float(revenue),'cancel_fees':float(cancel_fees),'users':users,
-        'popular':popular if popular else {},'monthly':monthly,
-        'recent':recent})
+        'popular':dict(popular) if popular else {},'monthly':[dict(m) for m in monthly],
+        'recent':[dict(r) for r in recent]})
 
 @app.route('/api/admin/bookings')
 def admin_bookings():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    result=rows(db_exec(conn, '''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
+    rows=conn.execute('''SELECT b.*,r.name as room_name,u.name as user_name,u.email as user_email
         FROM bookings b JOIN rooms r ON b.room_id=r.id JOIN users u ON b.user_id=u.id
-        ORDER BY b.created_at DESC'''))
-    release_db(conn); return jsonify(result)
+        ORDER BY b.created_at DESC''').fetchall()
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/admin/bookings/<ref>/complete',methods=['POST'])
 def complete_booking(ref):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    db_exec(conn, "UPDATE bookings SET status='completed' WHERE booking_ref=?",(ref,))
-    conn.commit(); release_db(conn); return jsonify({'success':True})
+    conn.execute("UPDATE bookings SET status='completed' WHERE booking_ref=?",(ref,))
+    conn.commit(); conn.close(); return jsonify({'success':True})
 
 @app.route('/api/admin/users')
 def admin_users():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    result=rows(db_exec(conn, "SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC"))
-    release_db(conn); return jsonify(result)
+    rows=conn.execute("SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC").fetchall()
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/admin/rooms',methods=['GET'])
 def admin_rooms():
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
-    conn=get_db(); result=rows(db_exec(conn, "SELECT * FROM rooms"))
-    release_db(conn); return jsonify(result)
+    conn=get_db(); rows=conn.execute("SELECT * FROM rooms").fetchall()
+    conn.close(); return jsonify([dict(r) for r in rows])
 
 @app.route('/api/admin/rooms/<int:rid>/toggle',methods=['POST'])
 def toggle_room(rid):
     if not require_admin(): return jsonify({'error':'Unauthorized'}),403
     conn=get_db()
-    db_exec(conn, "UPDATE rooms SET available=CASE WHEN available=1 THEN 0 ELSE 1 END WHERE id=?",(rid,))
-    conn.commit(); release_db(conn); return jsonify({'success':True})
+    conn.execute("UPDATE rooms SET available=CASE WHEN available=1 THEN 0 ELSE 1 END WHERE id=?",(rid,))
+    conn.commit(); conn.close(); return jsonify({'success':True})
 
+@app.route('/api/admin/meals',methods=['POST'])
+def admin_set_meal():
+    if not require_admin(): return jsonify({'error':'Unauthorized'}),403
+    d=request.json or {}
+    room_id=d.get('room_id'); date=d.get('date',datetime.now().strftime('%Y-%m-%d'))
+    meal_type=d.get('meal_type'); dish_name=d.get('dish_name','').strip(); description=d.get('description','').strip()
+    if not all([room_id,meal_type,dish_name]): return jsonify({'error':'Missing fields'}),400
+    conn=get_db()
+    conn.execute("DELETE FROM meals WHERE room_id=? AND date=? AND meal_type=?",(room_id,date,meal_type))
+    conn.execute("INSERT INTO meals (room_id,date,meal_type,dish_name,description) VALUES (?,?,?,?,?)",(room_id,date,meal_type,dish_name,description))
+    conn.commit(); conn.close(); return jsonify({'success':True})
+
+@app.route('/api/admin/meals/<int:rid>')
+def admin_get_meals(rid):
+    if not require_admin(): return jsonify({'error':'Unauthorized'}),403
+    conn=get_db(); today=datetime.now().strftime('%Y-%m-%d')
+    meals=conn.execute("SELECT * FROM meals WHERE room_id=? AND date=? ORDER BY meal_type",(rid,today)).fetchall()
+    conn.close(); return jsonify([dict(m) for m in meals])
+
+@app.route('/api/admin/meals/<int:mid>',methods=['DELETE'])
+def admin_delete_meal(mid):
+    if not require_admin(): return jsonify({'error':'Unauthorized'}),403
+    conn=get_db()
+    conn.execute("DELETE FROM meals WHERE id=?",(mid,))
+    conn.commit(); conn.close()
+    return jsonify({'success':True})
 
 @app.route('/api/travel-time',methods=['POST'])
 def calc_travel_time():
@@ -589,56 +394,8 @@ def split_bill():
     per=round(total/len(guests),2)
     return jsonify([{'name':g,'amount':per,'ref':str(uuid.uuid4())[:8].upper()} for g in guests])
 
-@app.route('/videos/<path:filename>')
-def serve_video(filename):
-    video_path = os.path.join('videos', filename)
-    if not os.path.exists(video_path):
-        return 'Video not found', 404
-
-    file_size = os.path.getsize(video_path)
-    range_header = request.headers.get('Range', None)
-
-    if not range_header:
-        # No range request — send whole file
-        def generate():
-            with open(video_path, 'rb') as f:
-                while chunk := f.read(1024 * 1024):
-                    yield chunk
-        return Response(generate(), status=200, mimetype='video/mp4',
-            headers={'Content-Length': str(file_size), 'Accept-Ranges': 'bytes'})
-
-    # Parse Range header e.g. bytes=0-1023
-    byte_start, byte_end = 0, None
-    match = range_header.replace('bytes=', '').split('-')
-    byte_start = int(match[0]) if match[0] else 0
-    byte_end   = int(match[1]) if match[1] else file_size - 1
-    byte_end   = min(byte_end, file_size - 1)
-    length     = byte_end - byte_start + 1
-
-    def generate_chunk():
-        with open(video_path, 'rb') as f:
-            f.seek(byte_start)
-            remaining = length
-            while remaining > 0:
-                chunk = f.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
-
-    return Response(generate_chunk(), status=206, mimetype='video/mp4',
-        headers={
-            'Content-Range':  f'bytes {byte_start}-{byte_end}/{file_size}',
-            'Content-Length': str(length),
-            'Accept-Ranges':  'bytes',
-        })
-
 @app.route('/')
 def index(): return send_from_directory('templates', 'index.html')
 
-# Run init_db on startup regardless of how the app is launched
-# (covers both gunicorn on Render and python app.py locally)
-init_db()
-
 if __name__=='__main__':
-    app.run(debug=True,port=5000)
+    init_db(); app.run(debug=True,port=5000)
